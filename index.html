@@ -192,7 +192,7 @@ function parseBreastTreatmentEffect(text) {
   const m = text.match(/treatment\s+effect\s*[:\-–—]\s*([^\n]+(?:\n[ \t]+[a-z]\.[^\n]+(?:\n[ \t]+[^\n]+)?)*)/i);
   if (!m) return { val: "", ok: false };
   const block = m[1].replace(/\s+/g, " ").trim();
-  if (/^\s*N\/?A\b|no\s+info|not\s+evaluated/i.test(block)) return { val: "", ok: false };
+  if (/^\s*N\/?A\b|not\s+applicable|no\s+info|not\s+evaluated/i.test(block)) return { val: "", ok: false };
   if (/^\s*absent\b|no\s+definite\s+response/i.test(block)) return { val: "absent", ok: true };
   const br = block.match(/in\s+the\s+breast\s*[-–—]\s*([^(;.\n]+)/i);
   const r = (br ? br[1] : block).trim();
@@ -224,6 +224,8 @@ function parseBreastMargins(text) {
     } else if (/\bnegative\b|\buninvolved\b/i.test(body)) subs.push({ mm: Infinity, text: `margin negative${dir ? ` at ${dir}` : ""}` });
   }
   if (subs.length) { subs.sort((a, b) => a.mm - b.mm); return { short: subs[0].text, full: subs.map((e) => e.text).join(", "), ok: true }; }
+  const cm = mText.match(/closest\s+margin\s*\(\s*([<>]?\s*\d+(?:\.\d+)?\s*(?:mm|cm))(?:\s+(?:from|at)\s+(?:the\s+)?([a-z ]+?)(?:\s+margin)?)?\s*\)/i);
+  if (cm) { const d = formatDirection(cm[2]), tx = `margin ${formatMarginDistToken(cm[1])}${d ? ` at ${d}` : ""}`; return { short: tx, full: tx, ok: true }; }
   const ent = [];
   const mk = (re) => { const m = mText.match(re); if (m) { const d = formatDirection(m[2]); ent.push({ dist: parseFloat(m[1]), text: `margin ${m[1]}cm${d ? ` at ${d}` : ""}` }); } };
   mk(/(\d+(?:\.\d+)?)\s*cm\s+to\s+invasive\s+carcinoma(?:\s+at\s+([^.;]+?))?(?=\s+and\s+|\s*[.;]|$)/i);
@@ -231,6 +233,8 @@ function parseBreastMargins(text) {
   if (!ent.length) mk(/(?:distance\s+from\s+closest\s+margin\s+is|closest\s+distance\s+is)\s+(\d+(?:\.\d+)?)\s*cm(?:\s+at\s+([^.;]+?))?(?=\s*[.;]|$)/i);
   if (ent.length) { ent.sort((a, b) => a.dist - b.dist); return { short: ent[0].text, full: ent.map((e) => e.text).join(", "), ok: true }; }
   if (/^\s*uninvolved\b/i.test(mText)) return { short: "margin uninvolved", full: "margin uninvolved", ok: true };
+  if (/\b(?:positive|involved)\b/i.test(mText) && !/negative|uninvolved|free/i.test(mText)) return { short: "margin+", full: "margin+", ok: true };
+  if (/\bnegative\b|\bfree\b|uninvolved/i.test(mText)) return { short: "margin negative", full: "margin negative", ok: true };
   return { short: "", full: "", ok: false };
 }
 
@@ -509,12 +513,12 @@ function extractBreastLnDetails(text, sec) {
 }
 
 function parseBreastLn(text) {
-  const sec = getField(text, "(?:axillary\\s+|regional\\s+)?(?:sentinel\\s+)?(?:lymph\\s+)?nodes?(?:\\s+status)?");
+  const sec = getField(text, "(?:axillary\\s+|regional\\s+)?(?:sentinel\\s+)?(?:lymph\\s+)?nodes?(?:\\s+status)?|nodal\\s+status");
   const f = _flat(sec);
   let m, ln = "";
   if (sec !== null && f) {
     m = f.match(/overall\s+(\d+)\s*\/\s*(\d+)/i) || f.match(/\(\s*(\d+)\s*\/\s*(\d+)/) || f.match(/(\d+)\s*\/\s*(\d+)/);
-    if (m) ln = `${m[1]}/${m[2]} LN involved`;
+    if (m) ln = +m[2] === 0 ? "no LN identified (0/0)" : `${m[1]}/${m[2]} LN involved`;
     else {
       const ex = f.match(/(?:examined|total\s+(?:number|no\.?)[^:]*)\s*[:=]?\s*(\d+)/i);
       let pos = 0, any = false;
@@ -548,7 +552,8 @@ function parseBreastReport(raw) {
     else if (/^(?:ductal\s+carcinoma\s+in\s+situ|DCIS)\b/i.test(h) && !/invasive/i.test(h)) { histType = "DCIS"; isPureDcis = true; }
     else if (/^(?:lobular\s+carcinoma\s+in\s+situ|LCIS)\b/i.test(h)) histType = "LCIS";
     else if (/invasive\s+lobular|\bILC\b/i.test(h)) histType = "invasive lobular carcinoma";
-    else if (/invasive\s+(?:ductal\s+)?carcinoma|\bIDC\b|\bNST\b/i.test(h)) histType = /special\s+type|NST|ductal/i.test(h) || /^invasive\s+carcinoma/i.test(h) ? "invasive carcinoma" : h.split(",")[0].toLowerCase();
+    else if (/invasive\s+ductal|\bIDC\b/i.test(h)) histType = "invasive ductal carcinoma";
+    else if (/invasive\s+carcinoma|\bNST\b/i.test(h)) histType = "invasive carcinoma";
     else histType = h.replace(/[.;].*$/, "").split(",")[0].toLowerCase();
     found.histType = true;
   } else if (/invasive\s+lobular\s+carcinoma|\bILC\b/i.test(text)) { histType = "invasive lobular carcinoma"; found.histType = true; }
@@ -575,7 +580,7 @@ function parseBreastReport(raw) {
 
   // Margin
   let marginRes = { short: "", full: "", ok: false };
-  const mSec = getField(text, "(?:surgical\\s+)?margins?(?:\\s+status)?");
+  const mSec = getField(text, "(?:surgical\\s+)?margins?(?:\\s+of\\s+excision|\\s+status)?");
   if (mSec !== null) marginRes = parseBreastMargins("Margins: " + mSec);
   if (!marginRes.ok) marginRes = parseBreastMargins(text);
   found.margin = marginRes.ok;
@@ -650,7 +655,7 @@ function parseHeadNeckReport(raw) {
   const tv = getField(text, "treatment\\s+effect");
   if (tv !== null) {
     const t = _flat(tv).toLowerCase();
-    if (t && !/^n\/?a\b|no\s+info|not\s+evaluated|none\s+identified|no\s+definite/i.test(t)) {
+    if (t && !/^n\/?a\b|not\s+applicable|no\s+info|not\s+evaluated|none\s+identified|no\s+definite/i.test(t)) {
       if (/moderate\s+response/.test(t)) treatment = "moderate treatment response";
       else if (/complete\s+response|pathologic\s+complete/.test(t)) treatment = "complete treatment response";
       else if (/marked\s+response/.test(t)) treatment = "marked treatment response";
@@ -677,7 +682,7 @@ function parseHeadNeckReport(raw) {
 
   // Margin
   let margin = "";
-  const mSec = getField(text, "(?:surgical\\s+)?margins?(?:\\s+status)?");
+  const mSec = getField(text, "(?:surgical\\s+)?margins?(?:\\s+of\\s+excision|\\s+status)?");
   if (mSec !== null && _flat(mSec)) {
     const mClean = _flat(mSec);
     const parts = [];
@@ -699,7 +704,7 @@ function parseHeadNeckReport(raw) {
   }
 
   // Lymph nodes
-  const lnSec = getField(text, "(?:regional\\s+)?lymph\\s+nodes?(?:\\s+status)?|neck\\s+dissection");
+  const lnSec = getField(text, "(?:regional\\s+)?lymph\\s+nodes?(?:\\s+status)?|neck\\s+dissection|nodal\\s+status");
   const scope = lnSec !== null ? lnSec : text;
   const zones = parseLnZones(scope);
   const fs = _flat(scope);
@@ -923,3 +928,4 @@ window.addEventListener("DOMContentLoaded", () => {
 </script>
 </body>
 </html>
+
